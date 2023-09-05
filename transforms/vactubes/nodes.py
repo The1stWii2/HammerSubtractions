@@ -11,7 +11,7 @@ from srctools import Vec, Entity, VMF, Output, conv_bool, Angle, Matrix, lerp
 
 
 LOGGER = srctools.logger.get_logger(__name__)
-PASS_OUT = 'User4'  # User output to use to trigger onPass etc outputs.
+PASS_OUT = 'User4'  # User output to use to trigger onPass etc. outputs.
 CUBE_MODEL = 'models/props/metal_box.mdl'
 # A bit smaller than the size of the model, so we can determine when to
 # start/stop showing ents on the screen.
@@ -36,7 +36,7 @@ def make_standard_cube(vmf: VMF) -> Entity:
 
 
 class DestType(Enum):
-    """The position of the output from a node.."""
+    """The position of the output from a node."""
     PRIM = PRIMARY = 'primary'
     SEC = SECONDARY = 'secondary'
     TER = TERTIARY = 'tertiary'
