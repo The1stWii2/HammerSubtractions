@@ -457,7 +457,11 @@ async def build_reference(prop: PropPos, qc: QC, mdl: Model) -> Mesh:
             mdl.skins[prop.skin]
         ))
         for tri in mesh.triangles:
-            tri.mat = swap_skins.get(tri.mat, tri.mat)
+            for path in mdl.cdmaterials:
+                temp = swap_skins.get((path + "/" if path != "" else "") + tri.mat, tri.mat)
+                if temp != tri.mat:
+                    tri.mat = temp
+                    break
 
     # For some reason all the SMDs are rotated badly, but only
     # if we append them.

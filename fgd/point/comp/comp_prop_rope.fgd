@@ -11,16 +11,18 @@
 
 	slack(integer) : "Slack" : 25 : "How much extra length the rope has, for 'catenary' mode (by default it has the length between its two endpoints in the editor)."
 
+	outgoing(vecline) : "Outgoing"
+	incoming(vecline) : "Incoming"
 
 	// Valve's interplator keyvalue just happens to provide the right visuals we want.
-	positioninterpolator[engine](integer): "Type": 2
-	positioninterpolator(choices) : "Type" : 2 : "How to interpolate the rope. Straight makes it straight. Spline uses a spline curve, which smoothly blends between points. Catenary makes it hang down, like the original move_rope. Bezier is an alternate smooth curve, but the visual in Hammer will be incorrect." =
-		[
-		0: "Straight"
-		1: "Spline Curve"
-		2: "Catenary"
-		3: "Bezier"
-		]
+	positioninterpolator(choices) : "Spline type" : 2 : "How should this spline be interpreted?" =
+	[
+		0: "Linear (doesn't use handles)"
+		1: "Catmull-Rom spline (doesn't use handles)"
+		2: "Catenary (doesn't use handles)"
+		3: "Quadratic Bezier (uses Outgoing handle)"
+		4: "Cubic Bezier (uses Incoming and Outgoing handles)"
+	]
 
 	segments(integer) : "Segments" : 2 : "Number of nodes to generate between each rope. Higher values make smoother ropes, but produce more faces."
 	sides(integer) : "Sides" : 8 : "Number of faces for each cylindrical section. Only the value at the start of the rope is used."
