@@ -1,6 +1,6 @@
 """Compile static prop cables, instead of sprites."""
 from typing import (
-    Optional, List, Tuple, FrozenSet, Callable,
+    Optional, List, Tuple, FrozenSet,
     TypeVar, MutableMapping, NewType, Set, Iterable, Dict, Iterator, cast,
 )
 from typing_extensions import Final, Self
@@ -64,7 +64,8 @@ class InterpType(Enum):
     STRAIGHT = 0
     CATMULL_ROM = 1
     ROPE = 2
-    BEZIER = 3
+    QUAD_BEZIER = 3
+    CUBIC_BEZIER = 4
 
 
 class VactubeGenType(Enum):
@@ -103,6 +104,7 @@ class SegPropOrient(Enum):
     PITCH_YAW = 'pitch_yaw'
     RAND_YAW = 'rand_yaw'
     RAND_FULL = 'rand'
+
 
 @attrs.define
 class RopePhys:
@@ -199,6 +201,8 @@ class Config:
     prop_fade_max_dist: float
     prop_fade_scale: float
     vac_separate_glass: VactubeGenType
+    outgoing_handle: FrozenVec
+    incoming_handle: FrozenVec
 
     @staticmethod
     def _parse_min(ent: Entity, keyvalue: str, minimum: Number, message: str) -> Number:
@@ -266,7 +270,6 @@ class Config:
             v_scale = 1.0
             flip_uv = False
             seg_props = VAC_SEG_CONF_SET
-
         else:
             rope_type = RopeType.ROPE
             # There's not really a vanilla material we can use for cables.
@@ -318,6 +321,10 @@ class Config:
         # Rescale this, so that if it's 1, the pixels are square.
         v_scale *= (u_max - u_min) / (2*math.pi*radius)
 
+        origin = Vec(conv_float(x) for x in ent['origin'].split(" "))
+        outgoing_handle = Vec(conv_float(x) for x in ent['outgoing'].split(" ")) - origin
+        incoming_handle = Vec(conv_float(x) for x in ent['incoming'].split(" ")) - origin
+
         return cls(
             rope_type,
             material,
@@ -341,7 +348,9 @@ class Config:
             conv_float(ent['fademindist'], -1.0),
             conv_float(ent['fademaxdist'], 0.0),
             conv_float(ent['fadescale'], 0.0),
-            vac_separate_glass
+            vac_separate_glass,
+            outgoing_handle.freeze(),     # TODO: Make sure this isn't None (default to Pos?).
+            incoming_handle.freeze()
         )
 
     def coll(self) -> Self:
@@ -436,7 +445,8 @@ async def build_rope(
     mdl_name: str,
     args: Tuple[Vec, FileSystem],
 ) -> Tuple[Vec, CollData, List[SegProp], List[List[Vec]]]:
-    """Construct the geometry for a rope. nodes_and_conn is saved into file system to check if the model needs to be recompiled. args is for information that can be lost after the compile"""
+    """Construct the geometry for a rope. nodes_and_conn is saved into file system to check if the model needs to be
+    recompiled. args is for information that can be lost after compilation."""
     LOGGER.info('Building rope {}', mdl_name)
     ents, connections, skins, vacgentype = rope_key
     offset, fsys = args
@@ -728,64 +738,49 @@ def interpolate_rope(node1: Node, node2: Node, seg_count: int) -> List[Node]:
     ]
 
 
-def interpolate_bezier(first_node: Node, last_node: Node, curve_segment_count: int) -> List[Node]:
-    """Interpolate a bezier curve, for better 90 degrees turn."""
-    # reference:
-    # https://en.wikipedia.org/wiki/De_Casteljau%27s_algorithm
+def bezier_point_at_t(points: List[Vec], t: float) -> Vec:
+    if len(points) == 1:
+        return Vec(points[0].x, points[0].y, points[0].z)
+    else:
+        new_points = []
+        for i in range(len(points) - 1):
+            new_points.append((1 - t) * points[i] + t * points[i + 1])
+        return bezier_point_at_t(new_points, t)
+
+
+def interpolate_quad_bezier(node1: Node, node2: Node, seg_count: int) -> List[Node]:
+    """Interpolate a quadratic bezier curve."""
+    a = node1.pos
+    b = node1.pos + node1.config.outgoing_handle
+    c = node2.pos
+
+    t_list = [t / (seg_count + 1) for t in range(0, seg_count + 2)]
     points: List[Node] = []
-    increment = 1 / curve_segment_count
-    # Only the segment count set in the first spline object counts
-    curve_x = []
-    curve_y = []
-    curve_z = []
-    curnode: Optional[Node] = first_node
-    while curnode is not None:
-        curve_x.append(curnode.pos.x)
-        curve_y.append(curnode.pos.y)
-        curve_z.append(curnode.pos.z)
-        curnode = curnode.next
-    # We do not calculate the first and last node of this curve
-    for l in range(1,curve_segment_count-1):
-        t = l * increment
-        x = de_casteljau(t,curve_x)
-        y = de_casteljau(t,curve_y)
-        z = de_casteljau(t,curve_z)
-        n = Node(Vec(x,y,z), first_node.config, first_node.radius)
-        points.append(n)
+    for t in t_list:
+        points.append(Node(bezier_point_at_t([a, b, c], t), node1.config))
+    return points[1:-1]
 
-    last_node.config = first_node.config
 
-    LOGGER.debug("Bezier Nodes Generated: ",points)
-    return points
+def interpolate_cubic_bezier(node1: Node, node2: Node, seg_count: int) -> List[Node]:
+    """Interpolate a cubic bezier curve."""
+    a = node1.pos
+    b = node1.pos + node1.config.outgoing_handle
+    c = node2.pos + node2.config.incoming_handle
+    d = node2.pos
 
-def de_casteljau(t, coefs):
-    beta = [c for c in coefs] # values in this list are overridden
-    n = len(beta)
-    for j in range(1, n):
-        for k in range(n - j):
-            beta[k] = beta[k] * (1 - t) + beta[k + 1] * t
-    return beta[0]
+    # TODO: This actually over-produces segments because of the fix at the end.
+    t_list = [t / (seg_count + 1) for t in range(0, seg_count + 2)]
+    points: List[Node] = []
+    for t in t_list:
+        points.append(Node(bezier_point_at_t([a, b, c, d], t), node1.config))
 
-def find_all_connected_exclude_firstlast(node: Node) -> Tuple[List[Node], Optional[Node], Optional[Node]]:
-    node_list: List[Node] = [node]
-    cur_back: Optional[Node] = node
-    cur_forward: Optional[Node] = node
-
-    while cur_back.prev is not None:
-        cur_back = cur_back.prev
-        node_list.append(cur_back)
-        assert cur_back.prev != node, 'Circular Node Detected'
-
-    while cur_forward.next is not None:
-        cur_forward = cur_forward.next
-        node_list.append(cur_forward)
-        assert cur_forward.next != node, 'Circular Node Detected'
-
-    if cur_back.prev is None:
-        node_list.remove(cur_back)
-    if cur_forward.next is None:
-        node_list.remove(cur_forward)
-    return node_list, cur_back, cur_forward
+    # If we left it at that, the line [0] -> [1] in the points List would /not/ be collinear with a -> b (and d -> c),
+    # as [1] would not lie on that line, and this may lead to undesirable results (e.g., vactubes not lining up as
+    # expected). To counteract this, we insert two additional Nodes, by taking points 'a' & 'd' and moving them in their
+    # handle's direction and inserting these as the second and second-to-last elements.
+    points.insert(1, Node(a + node1.config.outgoing_handle.norm() * ((points[1].pos - a).mag() / 2), node1.config))
+    points.insert(-1, Node(d + node2.config.incoming_handle.norm() * ((points[-2].pos - d).mag() / 2), node1.config))
+    return points[1:-1]
 
 
 def interpolate_all(nodes: Set[Node]) -> None:
@@ -794,49 +789,29 @@ def interpolate_all(nodes: Set[Node]) -> None:
     # to the actual nodes list second. This way sections that have been interpolated
     # don't affect the interpolation of neighbouring sections.
 
-    seen_bezier_nodes: Set[Node] = set()
-    # Add None in here to make code simpler to handle - we always ignore missing endpoints.
-    seen_bezier_nodes_ignore: Set[Optional[Node]] = {None}
-
     segments: List[List[Node]] = []
     for node1 in nodes:
         if node1.next is None or node1.config.segments <= 0:
             continue
 
         interp_type = node1.config.interp
-
-        if interp_type is InterpType.BEZIER:
-            if node1 in seen_bezier_nodes or node1 in seen_bezier_nodes_ignore:
-                continue
-            b_curve, first, last = find_all_connected_exclude_firstlast(node1)
-            LOGGER.debug("Curve Keyframes: ",first, b_curve, last)
-            seen_bezier_nodes.update(b_curve)
-            seen_bezier_nodes_ignore.add(first)
-            seen_bezier_nodes_ignore.add(last)
-            node1 = first
-            node2 = last
-        else:
-            node2 = node1.next
+        node2 = node1.next
         func = globals()['interpolate_' + interp_type.name.casefold()]
         points = func(node1, node2, node1.config.segments)
 
         for a, b in zip(points, points[1:]):
             a.next = b
             b.prev = a
-        points[0].prev = node1 # if segment count is low (like 2) for bezier curve, this will cause error. TODO: Fix this?
+        points[0].prev = node1
         points[-1].next = node2
         segments.append(points)
-
-    for removenode in seen_bezier_nodes:
-        LOGGER.debug("Removing Bezier Keyframe Node ",removenode)
-        nodes.remove(removenode)
 
     for points in segments:
         nodes.update(points)
         points[0].prev.next = points[0]
         points[-1].next.prev = points[-1]
 
-    # Finally, split nodes with too much of an angle between them - we can't smooth.
+    # Finally, split nodes with too much of an angle between them – we can't smooth.
     # Don't bother if they're real small angles though, that's fine.
     for node in list(nodes):
         if node.prev is None or node.next is None:
@@ -1239,7 +1214,6 @@ async def compile_rope(
             node.relative_to(origin)
             for node in nodes
         })
-
         skins = []
         for i in itertools.count(1):
             skin_str = ent[f'skin{i}']
@@ -1310,7 +1284,7 @@ async def compile_rope(
             flags |= StaticPropFlags.NO_SHADOW
 
         for m in modellist:
-            new_flags = flags | m.flags  # For the glass, we force shadows off 
+            new_flags = flags | m.flags  # For the glass, we force shadows off
             leafs = compute_visleafs(m.coll_data, ctx.bsp.vis_tree())
             ctx.bsp.props.append(StaticProp(
                 model=m.model_name,
@@ -1447,7 +1421,7 @@ async def comp_prop_rope(ctx: Context) -> None:
                 dyn_ents: List[Entity] = []
                 node = todo.pop()
                 connections: Set[Tuple[NodeID, NodeID]] = set()
-                # We need the set for fast is-in checks, and the list
+                # We need the set for fast is-in checks, and the list,
                 # so we can loop through while modifying it.
                 nodes: Set[NodeEnt] = {node}
                 unchecked: List[NodeEnt] = [node]
