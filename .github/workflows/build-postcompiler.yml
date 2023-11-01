@@ -1,7 +1,7 @@
 name: Build Postcompiler
 on:
-  schedule:
-    - cron: '14 9 * * TUE' # Run at 9:14 (7:14pm local) on Tuesday
+  push:
+    branches: [ master ]
   create:
     ref_type: 'tag'
   workflow_dispatch:
@@ -39,11 +39,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       # Build dev on schedule, since it's actually changing.
-      - name: Checkout Dev
+      - name: Checkout
         uses: actions/checkout@v3
-        if: github.event_name == 'schedule'
-        with:
-          ref: dev
       # Always build the exact tag that's pushed.
       - name: Checkout Tag
         uses: actions/checkout@v3
